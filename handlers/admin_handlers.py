@@ -69,71 +69,90 @@ async def edit_message_with_retry(context, chat_id, message_id, text, parse_mode
         logger.error(f"خطأ في تعديل رسالة: {e}")
 
 async def send_admin_notification(context: ContextTypes.DEFAULT_TYPE, transfer_data: dict):
-    """إرسال إشعار للمشرفين عن طلب تحويل جديد"""
+    """
+    إرسال إشعار للمشرفين عن طلب تحويل جديد
+    
+    :param context: سياق المحادثة
+    :param transfer_data: بيانات التحويل
+    """
     try:
-        # الحصول على بيانات المستخدم
-        db = Database()
+        transfer_id = transfer_data.get('transfer_id')
         user_id = transfer_data.get('user_id')
-        user_data = db.get_user(user_id)
-        registration_code = user_data.get('registration_code', '-') if user_data else '-'
-        transfer_id = str(transfer_data.get('transfer_id', ''))
-
-        # تجهيز نص الرسالة
-        admin_message = (
-            "🔔 إشعار تحويل جديد\n"
-            "────────────────\n\n"
-            f"📝 رقم العملية: {transfer_id}\n"
-            f"👤 المستخدم: @{transfer_data.get('username', '-')}\n"
-            f"📝 اسم العميل بالنظام : {registration_code}\n"
-            f"📅 تاريخ التسجيل: {user_data.get('registration_date', '-') if user_data else '-'}\n\n"
-            "💫 تفاصيل العملية:\n"
-            f"نوع العملية: {'تحويل عبر الاسم' if transfer_data.get('transfer_type') == 'name_transfer' else 'إيداع لرقم حساب'}\n"
-            f"💰 المبلغ: {transfer_data.get('amount')} USDT\n"
-            f"💵 المبلغ بالدولار: {transfer_data.get('usd_amount')} USD\n\n"
-        )
-
-        if transfer_data.get('transfer_type') == 'name_transfer':
-            admin_message += (
-                "👤 معلومات المستلم:\n"
-                f"الاسم: <code>{transfer_data.get('recipient_name', '-')}</code>\n" \
-                f"الجوال: <code>{transfer_data.get('recipient_number', '-')}</code>\n" \
-                f"💱 المبلغ بالعمله المختاره: <code>{round_local_amount(transfer_data.get('local_amount', 0))}</code> {transfer_data.get('local_currency')}\n"
-            )
-            if agency := transfer_data.get('transfer_agency'):
-                admin_message += f"جهة التحويل: {agency}\n"
-        else:
-            admin_message += (
-                "🏦 معلومات الحساب:\n"
-                f"المحفظة: <code>{transfer_data.get('wallet_name', '-')}</code>\n" \
-                f"رقم الحساب: <code>{transfer_data.get('account_number', '-')}</code>\n" \
-                f"💱 المبلغ بالعمله المحليه: <code>{round_local_amount(transfer_data.get('local_amount', 0))}</code> {transfer_data.get('local_currency')}\n"
-            )
-
-        admin_message += (
-            f"\n🌐 الشبكة: {transfer_data.get('usdt_network', '-')}\n"
-            f"⏰ وقت التحقق: {transfer_data.get('verified_at', '-')}"
-        )
-
-        # تجهيز أزرار المعالجة
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ معالجة الطلب", callback_data=f"admin_approve_{transfer_id}")],
-            [InlineKeyboardButton("❌ رفض الطلب", callback_data=f"admin_reject_{transfer_id}")],
+        
+        # محاولة معالجة التحويل تلقائياً أولاً
+        try:
+            logger.info(f"محاولة معالجة التحويل تلقائياً: {transfer_id}")
+            
+            # تحديث حالة التحويل إلى "جاري المعالجة"
+            db.update_transfer_status(transfer_id, 'processing')
+            
+            # إرسال التحويل إلى Tasker
+            result = tasker.send_transfer_to_tasker(transfer_data)
+            
+            if result.get('success', False):
+                # تم بدء العملية بنجاح
+                logger.info(f"تم بدء عملية التحويل التلقائي بنجاح: {transfer_id}")
+                
+                # إرسال إشعار للمستخدم
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        "🤖 تم استلام طلب التحويل الخاص بك وجاري معالجته تلقائياً.\n"
+                        "سيتم إعلامك بالنتيجة النهائية قريباً."
+                    )
+                )
+                
+                # إرسال إشعار للمشرفين
+                admin_message = (
+                    f"🔄 جاري معالجة التحويل تلقائياً:\n\n"
+                    f"{format_transfer_details(transfer_data)}\n\n"
+                    f"🤖 سيتم إعلامكم بالنتيجة النهائية قريباً."
+                )
+                
+                await context.bot.send_message(
+                    chat_id=ADMIN_GROUP_ID,
+                    text=admin_message
+                )
+                
+                return True  # تم المعالجة بنجاح
+            else:
+                # فشل في المعالجة التلقائية، إرسال الطلب للمشرفين
+                error_message = result.get('error', 'خطأ غير معروف')
+                logger.warning(f"فشل في معالجة التحويل تلقائياً: {transfer_id} - {error_message}")
+                
+                # إعادة التحويل إلى حالة معلق
+                db.update_transfer_status(transfer_id, 'pending')
+        except Exception as e:
+            logger.error(f"خطأ في محاولة المعالجة التلقائية: {e}")
+            # إعادة التحويل إلى حالة معلق
+            db.update_transfer_status(transfer_id, 'pending')
+        
+        # إذا وصلنا إلى هنا، فقد فشلت المعالجة التلقائية، نرسل الطلب للمشرفين
+        admin_message = format_transfer_details(transfer_data)
+        
+        # إنشاء أزرار التحكم
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ معالجة الطلب", callback_data=f"admin_approve_{transfer_id}"),
+                InlineKeyboardButton("❌ رفض الطلب", callback_data=f"admin_reject_{transfer_id}")
+            ],
             [InlineKeyboardButton("🤖 تحويل تلقائي", callback_data=f"admin_automate_{transfer_id}")]
-        ])
-
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         # إرسال الإشعار للمشرفين
         await context.bot.send_message(
-            chat_id=ADMIN_GROUP_ID,  # استخدام المعرف كما هو بدون تحويله
+            chat_id=ADMIN_GROUP_ID,
             text=admin_message,
-            reply_markup=keyboard,
-            parse_mode='HTML'
+            reply_markup=reply_markup
         )
-
+        
         logger.info(f"تم إرسال إشعار للمشرفين عن التحويل: {transfer_id}")
-
+        return False  # تم إرسال الطلب للمشرفين
+        
     except Exception as e:
         logger.error(f"خطأ في إرسال إشعار للمشرفين: {e}")
-        raise
+        return False
 
 def format_transfer_details(transfer: dict) -> str:
     """تنسيق تفاصيل التحويل في رسالة"""
@@ -1328,7 +1347,7 @@ async def handle_automate_transfer(update: Update, context: ContextTypes.DEFAULT
     try:
         # استخراج معرف التحويل إذا لم يتم تمريره
         if not transfer_id:
-            transfer_id = query.data.split('_')[1]
+            transfer_id = query.data.split('_')[-1]  # استخدام الجزء الأخير بعد التقسيم
         
         # الحصول على تفاصيل التحويل
         transfer = db.get_transfer(transfer_id)
@@ -1364,9 +1383,24 @@ async def handle_automate_transfer(update: Update, context: ContextTypes.DEFAULT
                     "سيتم إعلامك بالنتيجة النهائية عند الانتهاء."
                 )
             )
+            
+            # إرسال إشعار للمستخدم
+            if transfer.get('user_id'):
+                try:
+                    await context.bot.send_message(
+                        chat_id=transfer.get('user_id'),
+                        text=(
+                            "🤖 جاري معالجة طلب التحويل الخاص بك تلقائياً.\n"
+                            "سيتم إعلامك بالنتيجة النهائية قريباً."
+                        )
+                    )
+                except Exception as e:
+                    logger.error(f"خطأ في إرسال إشعار للمستخدم: {e}")
         else:
             # فشل في بدء العملية
             error_message = result.get('error', 'خطأ غير معروف')
+            
+            # إرسال رسالة للمشرف
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text=(
@@ -1374,11 +1408,30 @@ async def handle_automate_transfer(update: Update, context: ContextTypes.DEFAULT
                     "يرجى التحويل يدوياً أو المحاولة مرة أخرى."
                 )
             )
+            
             # إعادة التحويل إلى حالة معلق
             db.update_transfer_status(transfer_id, 'pending')
             
+            # إعادة عرض أزرار التحكم
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ معالجة الطلب", callback_data=f"admin_approve_{transfer_id}"),
+                    InlineKeyboardButton("❌ رفض الطلب", callback_data=f"admin_reject_{transfer_id}")
+                ],
+                [InlineKeyboardButton("🤖 تحويل تلقائي", callback_data=f"admin_automate_{transfer_id}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            # إرسال رسالة جديدة مع أزرار التحكم
+            admin_message = format_transfer_details(transfer)
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"{admin_message}\n\n⚠️ فشل في المعالجة التلقائية: {error_message}",
+                reply_markup=reply_markup
+            )
+            
     except Exception as e:
-        logger.error(f"خطأ في معالجة التحويل التلقائي: {e}")
+        logger.error(f"خطأ في معالجة التحويل التلقائي: {e}", exc_info=True)
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text="⚠️ حدث خطأ أثناء معالجة طلب التحويل التلقائي. الرجاء المحاولة مرة أخرى."

@@ -49,7 +49,6 @@ data/
 config.ini
 bot.log
 bot_data.pkl
-.env
 
 # Other unwanted paths
 Downloads/

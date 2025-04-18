@@ -180,7 +180,27 @@
                                 <img id="modalReceiptImage" class="img-fluid" alt="إيصال التحويل">
                             </div>
                         </div>
+                        <!-- زر التحويل التلقائي -->
+                        <div class="col-12 mt-3" id="automateContainer">
+                            <button id="automateTransferBtn" class="btn btn-primary w-100">
+                                <i class="bi bi-robot"></i> بدء التحويل التلقائي
+                            </button>
+                            <div id="taskerLinkContainer" class="mt-2" style="display: none;">
+                                <div class="alert alert-info">
+                                    <p class="mb-2">تم إنشاء رابط Tasker للتحويل التلقائي:</p>
+                                    <a href="#" id="taskerLink" class="btn btn-sm btn-info w-100" target="_blank">
+                                        <i class="bi bi-box-arrow-up-right"></i> فتح رابط Tasker
+                                    </a>
+                                    <small class="d-block mt-2 text-muted">
+                                        (سيفتح تطبيق Tasker تلقائياً لتنفيذ التحويل)
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
                     </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إغلاق</button>
                 </div>
             </div>
         </div>
@@ -192,49 +212,132 @@
             const modal = new bootstrap.Modal(document.getElementById('transferDetailsModal'));
             
             document.querySelectorAll('.view-details').forEach(button => {
-                button.addEventListener('click', async (e) => {
-                    e.preventDefault();
-                    const transferId = button.dataset.transferId;
+                button.addEventListener('click', function() {
+                    const transferId = this.getAttribute('data-id');
                     
-                    try {
-                        const response = await fetch(`/api/transfers/${transferId}`);
-                        const transfer = await response.json();
-                        
-                        if (transfer) {
-                            document.getElementById('modalTransferId').textContent = transfer.transfer_id;
-                            document.getElementById('modalUserCode').textContent = transfer.user_code;
-                            document.getElementById('modalTransferType').textContent = transfer.transfer_type;
-                            document.getElementById('modalAmount').textContent = `${transfer.amount} USDT`;
-                            document.getElementById('modalStatus').textContent = transfer.status;
-                            document.getElementById('modalCreatedAt').textContent = transfer.created_at;
-                            
-                            let recipientInfo = '';
-                            if (transfer.recipient_name) {
-                                recipientInfo += `الاسم: ${transfer.recipient_name}<br>`;
+                    // إظهار المودال أثناء تحميل البيانات
+                    modal.show();
+                    
+                    // تحميل بيانات التحويل
+                    fetch(`/api/transfers/${transferId}`)
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                const transfer = data.transfer;
+                                
+                                // تعبئة بيانات المودال
+                                document.getElementById('modalTransferId').textContent = transfer.transfer_id;
+                                document.getElementById('modalUserCode').textContent = transfer.user_code || 'غير متوفر';
+                                document.getElementById('modalTransferType').textContent = transfer.wallet_name || 'غير متوفر';
+                                document.getElementById('modalAmount').textContent = `${transfer.amount} ${transfer.currency || ''}`;
+                                document.getElementById('modalStatus').textContent = getStatusText(transfer.status);
+                                document.getElementById('modalCreatedAt').textContent = new Date(transfer.created_at).toLocaleString('ar-SA');
+                                
+                                // معلومات المستلم
+                                let recipientInfo = '';
+                                if (transfer.recipient_name) recipientInfo += `الاسم: ${transfer.recipient_name}<br>`;
+                                if (transfer.recipient_number) recipientInfo += `الرقم: ${transfer.recipient_number}<br>`;
+                                document.getElementById('modalRecipientInfo').innerHTML = recipientInfo || 'غير متوفر';
+                                
+                                // إظهار/إخفاء الإيصال
+                                if (transfer.receipt_url) {
+                                    document.getElementById('modalReceiptImage').src = transfer.receipt_url;
+                                    document.getElementById('receiptContainer').style.display = 'block';
+                                } else {
+                                    document.getElementById('receiptContainer').style.display = 'none';
+                                }
+                                
+                                // إظهار/إخفاء زر التحويل التلقائي حسب حالة التحويل
+                                const automateBtn = document.getElementById('automateTransferBtn');
+                                const taskerLinkContainer = document.getElementById('taskerLinkContainer');
+                                
+                                if (transfer.status === 'pending') {
+                                    automateBtn.style.display = 'block';
+                                    taskerLinkContainer.style.display = 'none';
+                                    
+                                    // إضافة معرف التحويل إلى زر التحويل التلقائي
+                                    automateBtn.setAttribute('data-id', transfer.transfer_id);
+                                } else {
+                                    automateBtn.style.display = 'none';
+                                    taskerLinkContainer.style.display = 'none';
+                                }
                             }
-                            if (transfer.recipient_number) {
-                                recipientInfo += `الرقم: ${transfer.recipient_number}<br>`;
-                            }
-                            if (transfer.account_number) {
-                                recipientInfo += `رقم الحساب: ${transfer.account_number}`;
-                            }
-                            document.getElementById('modalRecipientInfo').innerHTML = recipientInfo;
-                            
-                            if (transfer.receipt_url) {
-                                document.getElementById('modalReceiptImage').src = transfer.receipt_url;
-                                document.getElementById('receiptContainer').style.display = 'block';
-                            } else {
-                                document.getElementById('receiptContainer').style.display = 'none';
-                            }
-                            
-                            modal.show();
-                        }
-                    } catch (error) {
-                        console.error('Error fetching transfer details:', error);
-                        alert('حدث خطأ أثناء جلب تفاصيل العملية');
-                    }
+                        })
+                        .catch(error => {
+                            console.error('Error fetching transfer details:', error);
+                        });
                 });
             });
+            
+            // معالجة زر التحويل التلقائي
+            document.getElementById('automateTransferBtn').addEventListener('click', function() {
+                const transferId = this.getAttribute('data-id');
+                const button = this;
+                
+                // تغيير حالة الزر
+                button.disabled = true;
+                button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> جاري التنفيذ...';
+                
+                // إرسال طلب بدء التحويل التلقائي
+                fetch(`/api/transfers/${transferId}/automate`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // إخفاء الزر وإظهار رابط Tasker
+                        button.style.display = 'none';
+                        
+                        // إظهار رابط Tasker إذا كان متوفراً
+                        const taskerLinkContainer = document.getElementById('taskerLinkContainer');
+                        const taskerLink = document.getElementById('taskerLink');
+                        
+                        if (data.tasker_link) {
+                            taskerLink.href = data.tasker_link;
+                            taskerLinkContainer.style.display = 'block';
+                            
+                            // فتح الرابط تلقائياً بعد ثانيتين
+                            setTimeout(() => {
+                                window.location.href = data.tasker_link;
+                            }, 2000);
+                        }
+                        
+                        // تحديث حالة التحويل في الجدول
+                        const statusCell = document.querySelector(`tr[data-id="${transferId}"] .status-cell`);
+                        if (statusCell) {
+                            statusCell.innerHTML = '<span class="badge bg-info status-badge">جاري المعالجة</span>';
+                        }
+                    } else {
+                        // إعادة تفعيل الزر في حالة الخطأ
+                        button.disabled = false;
+                        button.innerHTML = '<i class="bi bi-robot"></i> بدء التحويل التلقائي';
+                        
+                        // عرض رسالة الخطأ
+                        alert('حدث خطأ أثناء بدء التحويل التلقائي: ' + (data.error || 'خطأ غير معروف'));
+                    }
+                })
+                .catch(error => {
+                    console.error('Error automating transfer:', error);
+                    button.disabled = false;
+                    button.innerHTML = '<i class="bi bi-robot"></i> بدء التحويل التلقائي';
+                    alert('حدث خطأ أثناء الاتصال بالخادم');
+                });
+            });
+            
+            // دالة لتحويل حالة التحويل إلى نص مناسب
+            function getStatusText(status) {
+                switch(status) {
+                    case 'pending': return 'معلق';
+                    case 'processing': return 'جاري المعالجة';
+                    case 'completed': return 'مكتمل';
+                    case 'failed': return 'فشل';
+                    case 'cancelled': return 'ملغي';
+                    default: return status;
+                }
+            }
         });
     </script>
 </body>

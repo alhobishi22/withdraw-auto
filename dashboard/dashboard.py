@@ -428,14 +428,54 @@ def automate_transfer(transfer_id):
         # إرسال التحويل إلى Tasker
         result = tasker.send_transfer_to_tasker(transfer)
         
+        # إذا كان هناك رابط Tasker، نقوم بإرجاعه
+        tasker_link = result.get('tasker_link', '')
+        
         return jsonify({
             'success': True,
             'message': 'تم بدء عملية التحويل التلقائي',
-            'tasker_result': result
+            'tasker_result': result,
+            'tasker_link': tasker_link
         })
         
     except Exception as e:
         app.logger.error(f"خطأ في بدء التحويل التلقائي: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/tasker_callback', methods=['POST'])
+def tasker_callback():
+    """
+    نقطة نهاية لاستقبال نتائج التحويل من Tasker
+    """
+    try:
+        data = request.json
+        
+        if not data:
+            return jsonify({'success': False, 'error': 'No data received'}), 400
+        
+        transfer_id = data.get('transfer_id')
+        status = data.get('status')
+        result = data.get('result')
+        error = data.get('error')
+        
+        if not transfer_id or not status:
+            return jsonify({'success': False, 'error': 'Missing required fields'}), 400
+        
+        # تحديث حالة التحويل في قاعدة البيانات
+        if status == 'completed':
+            db.update_transfer_status(transfer_id, 'completed')
+            app.logger.info(f"تم اكتمال التحويل بنجاح: {transfer_id}")
+        elif status == 'failed':
+            db.update_transfer_status(transfer_id, 'failed', error)
+            app.logger.error(f"فشل التحويل: {transfer_id} - {error}")
+        else:
+            db.update_transfer_status(transfer_id, status)
+            app.logger.info(f"تم تحديث حالة التحويل: {transfer_id} - {status}")
+        
+        return jsonify({'success': True, 'message': 'تم استلام النتيجة بنجاح'})
+        
+    except Exception as e:
+        app.logger.error(f"خطأ في معالجة استدعاء Tasker: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
